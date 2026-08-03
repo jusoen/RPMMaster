@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark by default: the Compose theme owns the real colours, this only
+         keeps the pre-Compose window background from flashing white. -->
+    <style name="Theme.RPMMaster" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

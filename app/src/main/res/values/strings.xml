@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RPM Master</string>
+    <string name="notif_channel_name">RPM monitoring</string>
+    <string name="notif_channel_desc">Shows the live reading while the listener is running.</string>
+</resources>

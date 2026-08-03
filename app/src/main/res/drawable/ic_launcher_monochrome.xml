@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed-icon variant: the same bezel and trace in one colour, tinted by the
+  launcher. The cream hairline is dropped — with no colour to separate it from
+  the bezel it only muddies the ring — and the strokes are heavier to hold up
+  once the contrast is gone.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M23,54 a31,31 0 1,0 62,0 a31,31 0 1,0 -62,0"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="7.5" />
+
+    <path
+        android:pathData="M33,56 L44,56 L49,41 L56,69 L61,56 L75,56"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="5.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+</vector>

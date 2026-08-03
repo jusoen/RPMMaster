@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A period instrument bezel enclosing a live telemetry trace.
+
+  The chrome ring and the cream hairline inside it are the classic car, the
+  transient is the modern telemetry. Deliberately not a tachometer: the app is a
+  telemetry master, and the dial belongs on the readout screen rather than in the
+  launcher.
+
+  Everything sits inside a radius of about 35 of centre, so no launcher mask —
+  circle, squircle or teardrop — clips it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Chrome bezel. Two-stop-plus-midpoint gradient with the light from the
+         top-left, which is what makes a flat ring read as turned metal. -->
+    <path
+        android:pathData="M23,54 a31,31 0 1,0 62,0 a31,31 0 1,0 -62,0"
+        android:strokeWidth="7">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:type="linear"
+                android:startX="32"
+                android:startY="23"
+                android:endX="76"
+                android:endY="85">
+                <item android:offset="0" android:color="#FFF2F5F7" />
+                <item android:offset="0.5" android:color="#FFA8AEB4" />
+                <item android:offset="1" android:color="#FF63696E" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Cream hairline just inside the chrome, echoing the markings on the
+         readout's dial face. -->
+    <path
+        android:pathData="M28.5,54 a25.5,25.5 0 1,0 51,0 a25.5,25.5 0 1,0 -51,0"
+        android:strokeColor="#CCF3E6D8"
+        android:strokeWidth="1.6" />
+
+    <!-- The trace: baseline, a sharp rise, an undershoot, baseline. The
+         undershoot is what stops it reading as a generic heartbeat. -->
+    <path
+        android:pathData="M33,56 L44,56 L49,41 L56,69 L61,56 L75,56"
+        android:strokeColor="#FFE8642F"
+        android:strokeWidth="4.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+</vector>

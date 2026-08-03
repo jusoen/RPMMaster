@@ -1,0 +1,10 @@
+# Keep the Gradle wrapper working on every platform. gradlew must stay LF or a
+# Unix shell rejects it, and gradlew.bat must stay CRLF for cmd.exe.
+* text=auto eol=lf
+*.bat text eol=crlf
+gradlew text eol=lf
+
+*.jar binary
+*.png binary
+*.jpg binary
+*.pdf binary
