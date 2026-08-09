@@ -221,7 +221,6 @@ class RpmService : Service() {
         val node = id?.let { registry.nodes.value[it] }
         val title = when {
             node == null -> "Waiting for a node…"
-            node.stalled -> "STALL / 0 RPM"
             else -> "${node.last.rpm} RPM"
         }
         val detail = node?.let {
@@ -230,7 +229,7 @@ class RpmService : Service() {
                 Freshness.STALE -> "STALE"
                 Freshness.OFFLINE -> "OFFLINE"
             }
-            "node ${it.nodeId} · peak ${it.last.rpmPeak} · $fresh"
+            "node ${it.nodeId} · peak ${it.peakRpm} · $fresh"
         }
         // If POST_NOTIFICATIONS was refused the post is dropped silently by the
         // platform. That is why the UI asks for it — otherwise the service looks dead.

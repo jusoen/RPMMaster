@@ -46,22 +46,22 @@ import kotlin.math.sin
 
 // ---- geometry ------------------------------------------------------------
 
-const val TACH_MAX_RPM = 8000f
-const val TACH_REDLINE_RPM = 6500f
+const val TACH_MAX_RPM = 7000f
+const val TACH_REDLINE_RPM = 5500f
 
 /**
  * Sweep in degrees.
  *
  * The specification asks for 240 degrees and separately describes it as "7 o'clock
- * to 5 o'clock", which is a 300 degree span — the two do not agree. The numeric
- * figure wins: 240 degrees is the classic sweep, and centring it on 12 o'clock puts
- * the zero stop at 8 o'clock and the end stop at 4 o'clock.
+ * to 5 o'clock", which is a 300 degree span, so the two never agreed. 250 is the
+ * chosen figure. Centred on 12 o'clock, it puts the zero stop 125 degrees anti-
+ * clockwise of vertical and the end stop the same distance the other way.
  */
-const val TACH_SWEEP_DEG = 240f
+const val TACH_SWEEP_DEG = 250f
 
 /** Canvas angles: 0 is 3 o'clock and positive runs clockwise. */
 private const val TWELVE_O_CLOCK_DEG = -90f
-private const val TACH_START_DEG = TWELVE_O_CLOCK_DEG - TACH_SWEEP_DEG / 2f   // 8 o'clock
+private const val TACH_START_DEG = TWELVE_O_CLOCK_DEG - TACH_SWEEP_DEG / 2f
 
 /** RPM to canvas angle. Clamped: above the top the needle pins, it never wraps. */
 fun rpmToAngle(rpm: Float): Float =
@@ -80,6 +80,8 @@ data class DialColors(
     val caption: Color = Color(0xFFB9AEA2),
     val redline: Color = Color(0xFFD1402A),
     val needle: Color = Color(0xFFE8642F),
+    /** The high-water marker. Amber, so it never reads as a second needle. */
+    val peak: Color = Color(0xFFE8A33D),
     val boss: Color = Color(0xFFBFC3C7),
     val bossShadow: Color = Color(0xFF2A2C2E),
 )
@@ -111,6 +113,7 @@ private fun DialColors.forFreshness(freshness: Freshness): DialColors {
         caption = caption.desaturate(amount),
         redline = redline.desaturate(amount),
         needle = needle.desaturate(amount),
+        peak = peak.desaturate(amount),
         boss = boss.desaturate(amount),
         bossShadow = bossShadow,
     )
@@ -121,6 +124,12 @@ private fun DialColors.forFreshness(freshness: Freshness): DialColors {
 /**
  * @param rpm the reading to point at. Above [TACH_MAX_RPM] the needle pins at the
  *   end stop and the digital value beside the dial carries the real number.
+ * @param peakRpm the high-water mark, drawn as a tell-tale marker on the scale. Null
+ *   means nothing has been recorded yet and no marker is drawn. Zero is a mark like
+ *   any other and *is* drawn: after a reset taken while the engine is stopped, the
+ *   highest reading since is genuinely zero, and hiding the marker there would read
+ *   as the reset having failed. Like the needle it pins at the end stop rather than
+ *   wrapping.
  * @param freshness drives desaturation. When it is not [Freshness.LIVE] the needle
  *   **holds its last angle** rather than dropping to zero, so a stalled engine
  *   (needle at the zero stop, live) and a lost node (needle held, offline) can never
@@ -131,6 +140,7 @@ fun RetroTachometer(
     rpm: Long,
     freshness: Freshness,
     modifier: Modifier = Modifier,
+    peakRpm: Long? = null,
     colors: DialColors = DialColors(),
 ) {
     val target = rpmToAngle(rpm.toFloat())
@@ -161,6 +171,9 @@ fun RetroTachometer(
             val radius = size.minDimension / 2f
             val centre = Offset(size.width / 2f, size.height / 2f)
             drawFace(centre, radius, shown, measurer)
+            // Under the needle on purpose: at the moment the peak is being set the two
+            // coincide, and the live reading must stay the thing you read first.
+            if (peakRpm != null) drawPeakMarker(centre, radius, rpmToAngle(peakRpm.toFloat()), shown)
             drawNeedle(centre, radius, angle.value, shown)
         }
     }
@@ -204,9 +217,9 @@ private fun DrawScope.drawFace(
         style = Stroke(width = bezelWidth),
     )
 
-    // Redline: a thick band just inside the tick ring, from 6500 to the top of the
-    // scale. The firmware's design window stops at 7500, so the redline deliberately
-    // sits above the normal operating range.
+    // Redline: a thick band just inside the tick ring, from 5500 to the top of the
+    // scale, which is also the end stop. Nothing is drawn beyond the scale, so the
+    // band can never imply a reading the dial cannot show.
     val redlineRadius = faceRadius * 0.88f
     val redlineWidth = faceRadius * 0.075f
     val redlineStart = rpmToAngle(TACH_REDLINE_RPM)
@@ -252,7 +265,7 @@ private fun DrawScope.drawFace(
         fontFamily = FontFamily.Serif,
         fontWeight = FontWeight.Medium,
     )
-    for (thousand in 0..8) {
+    for (thousand in 0..7) {
         val a = Math.toRadians(rpmToAngle(thousand * 1000f).toDouble())
         val layout = measurer.measure(thousand.toString(), numeralStyle)
         drawText(
@@ -264,8 +277,8 @@ private fun DrawScope.drawFace(
         )
     }
 
-    // The multiplier caption. The scale is labelled 0-8 for 0-8000, so this reads
-    // x1000 — the brief's "RPM x100" does not match its own 0-8 labelling.
+    // The multiplier caption. The scale is labelled 0-7 for 0-7000, so this reads
+    // x1000 — the brief's "RPM x100" does not match its own labelling.
     val captionStyle = TextStyle(
         color = c.caption,
         fontSize = (faceRadius * 0.085f).toSp(),
@@ -280,6 +293,39 @@ private fun DrawScope.drawFace(
             centre.y + faceRadius * 0.34f,
         ),
     )
+}
+
+// ---- peak marker ---------------------------------------------------------
+
+/**
+ * The tell-tale: a short radial blade on the scale at the highest reading seen, the
+ * mechanical equivalent of the pushed pointer on a period tachometer.
+ *
+ * Deliberately not a full needle. It reaches inwards only as far as the numerals, so
+ * at a glance the dial still has exactly one thing pointing at the centre.
+ */
+private fun DrawScope.drawPeakMarker(
+    centre: Offset,
+    radius: Float,
+    angleDeg: Float,
+    c: DialColors,
+) {
+    val faceRadius = radius * 0.945f
+    val outer = faceRadius * 0.98f
+    val inner = faceRadius * 0.66f
+    val a = Math.toRadians(angleDeg.toDouble())
+    val cosA = cos(a).toFloat()
+    val sinA = sin(a).toFloat()
+
+    drawLine(
+        color = c.peak,
+        start = Offset(centre.x + cosA * outer, centre.y + sinA * outer),
+        end = Offset(centre.x + cosA * inner, centre.y + sinA * inner),
+        strokeWidth = faceRadius * 0.022f,
+    )
+    // A blob at the rim end, which is what makes it read as a marker parked against
+    // the scale rather than as a stray tick.
+    drawCircle(c.peak, radius = faceRadius * 0.035f, center = Offset(centre.x + cosA * outer, centre.y + sinA * outer))
 }
 
 // ---- needle --------------------------------------------------------------
@@ -348,13 +394,17 @@ private fun PreviewZero() = RetroTachometer(0, Freshness.LIVE, Modifier.size(280
 @Composable
 private fun PreviewMid() = RetroTachometer(3000, Freshness.LIVE, Modifier.size(280.dp))
 
-@Preview(name = "7500 — top of the design window", showBackground = true, backgroundColor = 0xFF000000)
+@Preview(name = "5500 — start of the redline", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
-private fun PreviewTopOfWindow() = RetroTachometer(7500, Freshness.LIVE, Modifier.size(280.dp))
+private fun PreviewRedlineStart() = RetroTachometer(5500, Freshness.LIVE, Modifier.size(280.dp))
 
 @Preview(name = "9000 — pinned at the end stop", showBackground = true, backgroundColor = 0xFF000000)
 @Composable
 private fun PreviewPinned() = RetroTachometer(9000, Freshness.LIVE, Modifier.size(280.dp))
+
+@Preview(name = "3000, peak 6100 — tell-tale", showBackground = true, backgroundColor = 0xFF000000)
+@Composable
+private fun PreviewPeak() = RetroTachometer(3000, Freshness.LIVE, Modifier.size(280.dp), peakRpm = 6100)
 
 @Preview(name = "3000 — stale", showBackground = true, backgroundColor = 0xFF000000)
 @Composable

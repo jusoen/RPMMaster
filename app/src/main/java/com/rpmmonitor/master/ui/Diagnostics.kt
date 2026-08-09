@@ -199,6 +199,8 @@ private fun PreviewDiagnostics() = RPMMasterTheme(darkTheme = true) {
         node = NodeState(
             nodeId = 1,
             last = RpmPacket(1, 41234, 3_754_000, 4200, 6100),
+            peakRpm = 6100,
+            history = emptyList(),
             senderIp = "192.168.43.20",
             senderIps = setOf("192.168.43.20"),
             lastSeenElapsedMs = 0,

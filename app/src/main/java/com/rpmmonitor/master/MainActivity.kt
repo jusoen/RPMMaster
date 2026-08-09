@@ -9,31 +9,32 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +43,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rpmmonitor.master.export.ExportResult
+import com.rpmmonitor.master.export.ExportWriter
+import com.rpmmonitor.master.export.JsonExport
 import com.rpmmonitor.master.net.ListenerState
 import com.rpmmonitor.master.service.RpmService
 import com.rpmmonitor.master.state.ListenerStats
@@ -49,11 +53,13 @@ import com.rpmmonitor.master.state.NodeState
 import com.rpmmonitor.master.ui.Diagnostics
 import com.rpmmonitor.master.ui.MainReadout
 import com.rpmmonitor.master.ui.NodeList
+import com.rpmmonitor.master.ui.RpmGraph
 import com.rpmmonitor.master.ui.theme.InstrumentAmber
 import com.rpmmonitor.master.ui.theme.InstrumentRed
 import com.rpmmonitor.master.ui.theme.RPMMasterTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Hosts the three screens and owns the binding to [RpmService].
@@ -127,7 +133,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen(val title: String) { READOUT("Readout"), NODES("Nodes"), DIAGNOSTICS("Diagnostics") }
+private enum class Screen(val title: String) {
+    READOUT("Readout"),
+    GRAPH("Graph"),
+    NODES("Nodes"),
+    DIAGNOSTICS("Diagnostics"),
+}
 
 @Composable
 private fun AppScreen(binderFlow: StateFlow<RpmService.LocalBinder?>) {
@@ -151,13 +162,17 @@ private fun AppScreen(binderFlow: StateFlow<RpmService.LocalBinder?>) {
     val selectedId: Int? by (binder?.selectedNodeId ?: noSelection).collectAsStateWithLifecycle()
     val startedAt: Long? by (binder?.startedAtElapsedMs ?: noStartedAt).collectAsStateWithLifecycle()
 
-    var screen by remember { mutableStateOf(Screen.READOUT) }
-
     // The node list is offered only once a second node_id has been seen.
     val multiNode = nodes.size > 1
-    LaunchedEffect(multiNode) {
-        if (!multiNode && screen == Screen.NODES) screen = Screen.READOUT
-    }
+    val visible = Screen.entries.filter { it != Screen.NODES || multiNode }
+
+    // The pager is the single source of truth for which screen is showing. The tabs
+    // drive it and read from it, so a swipe and a tap cannot disagree — and when the
+    // node list appears or goes away, the page count follows and the pager clamps
+    // itself rather than leaving the tab row pointing at a screen that is not there.
+    val pager = rememberPagerState(pageCount = { visible.size })
+    val scope = rememberCoroutineScope()
+    val screen = visible.getOrNull(pager.currentPage) ?: Screen.READOUT
 
     val selected = selectedId?.let { nodes[it] } ?: nodes.values.minByOrNull { it.nodeId }
 
@@ -169,26 +184,76 @@ private fun AppScreen(binderFlow: StateFlow<RpmService.LocalBinder?>) {
             onStart = { RpmService.start(context) },
             onStop = { RpmService.stop(context) },
             listenerState = listenerState,
+            // Everything the registry holds, not just the screen being looked at.
+            // Disabled with no nodes: an export of nothing is a support ticket.
+            canSave = nodes.isNotEmpty(),
+            onSave = {
+                val json = JsonExport.build(
+                    nodes = nodes.values,
+                    stats = stats,
+                    sessionUptimeMs = startedAt?.let { SystemClock.elapsedRealtime() - it },
+                    nowElapsedMs = SystemClock.elapsedRealtime(),
+                    wallClockMs = System.currentTimeMillis(),
+                )
+                val result = ExportWriter.write(
+                    context = context,
+                    fileName = JsonExport.fileName(System.currentTimeMillis()),
+                    content = json,
+                )
+                Toast.makeText(
+                    context,
+                    when (result) {
+                        is ExportResult.Saved -> "Saved to ${result.location}"
+                        is ExportResult.Failed -> "Save failed: ${result.message}"
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+            },
         )
 
-        val visible = Screen.entries.filter { it != Screen.NODES || multiNode }
         TabRow(selectedTabIndex = visible.indexOf(screen).coerceAtLeast(0)) {
-            visible.forEach { s ->
+            visible.forEachIndexed { index, s ->
                 Tab(
                     selected = s == screen,
-                    onClick = { screen = s },
+                    onClick = { scope.launch { pager.animateScrollToPage(index) } },
                     text = { Text(s.title) },
                 )
             }
         }
 
-        Box(Modifier.fillMaxSize()) {
-            when (screen) {
+        HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
+            // Guarded rather than indexed directly: the page count and this lambda
+            // are recomposed from the same list, but a page still being animated out
+            // as the list shrinks would otherwise index past its end.
+            when (visible.getOrNull(page)) {
                 Screen.READOUT -> {
                     // Scoped to this screen only, so it is dropped as soon as the
                     // user navigates away.
                     KeepScreenOn()
-                    MainReadout(selected, listening = running)
+                    MainReadout(
+                        node = selected,
+                        listening = running,
+                        // No node means nothing to reset, so the tap is a no-op
+                        // rather than a disabled control that needs explaining.
+                        onResetPeak = {
+                            selected?.let {
+                                binder?.registry?.resetPeak(it.nodeId, SystemClock.elapsedRealtime())
+                            }
+                        },
+                    )
+                }
+                Screen.GRAPH -> {
+                    // Same reasoning as the readout: this is a screen you watch.
+                    KeepScreenOn()
+                    RpmGraph(
+                        node = selected,
+                        listening = running,
+                        onResetGraph = {
+                            selected?.let {
+                                binder?.registry?.clearHistory(it.nodeId, SystemClock.elapsedRealtime())
+                            }
+                        },
+                    )
                 }
                 Screen.NODES -> NodeList(
                     nodes = nodes.values.sortedBy { it.nodeId },
@@ -201,6 +266,7 @@ private fun AppScreen(binderFlow: StateFlow<RpmService.LocalBinder?>) {
                     listenerState = listenerState,
                     sessionUptimeMs = startedAt?.let { SystemClock.elapsedRealtime() - it },
                 )
+                null -> Unit
             }
         }
     }
@@ -212,6 +278,8 @@ private fun ControlBar(
     onStart: () -> Unit,
     onStop: () -> Unit,
     listenerState: ListenerState,
+    canSave: Boolean,
+    onSave: () -> Unit,
 ) {
     Row(
         Modifier
@@ -241,14 +309,26 @@ private fun ControlBar(
                 fontSize = 11.sp,
             )
         }
-        Button(
-            onClick = if (running) onStop else onStart,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (running) InstrumentRed else InstrumentAmber,
-                contentColor = androidx.compose.ui.graphics.Color.Black,
-            ),
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(if (running) "Stop" else "Start", fontWeight = FontWeight.Bold)
+            OutlinedButton(
+                onClick = onSave,
+                enabled = canSave,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = InstrumentAmber),
+            ) {
+                Text("Save", fontWeight = FontWeight.Bold)
+            }
+            Button(
+                onClick = if (running) onStop else onStart,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (running) InstrumentRed else InstrumentAmber,
+                    contentColor = androidx.compose.ui.graphics.Color.Black,
+                ),
+            ) {
+                Text(if (running) "Stop" else "Start", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

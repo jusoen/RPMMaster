@@ -34,6 +34,18 @@ data class ListenerStats(
  */
 class NodeRegistry {
 
+    companion object {
+        /** How much history the graph is given. */
+        const val HISTORY_WINDOW_MS = 60_000L
+
+        /**
+         * Hard ceiling on retained samples, so the window is not the only bound.
+         * 60 s at the firmware's fastest 100 ms cadence is 600, and this is twice
+         * that: a node sending faster than its own spec cannot exhaust memory here.
+         */
+        const val MAX_HISTORY_SAMPLES = 1_200
+    }
+
     private val _nodes = MutableStateFlow<Map<Int, NodeState>>(emptyMap())
     val nodes: StateFlow<Map<Int, NodeState>> = _nodes.asStateFlow()
 
@@ -79,6 +91,35 @@ class NodeRegistry {
     @Synchronized
     fun evaluateFreshness(nowElapsedMs: Long) {
         if (accumulators.isEmpty()) return
+        publish(nowElapsedMs)
+    }
+
+    /**
+     * Reset one node's displayed high-water mark.
+     *
+     * The node cannot be told to reset its own `rpm_peak` — the protocol is one-way —
+     * so this rebases the master's figure to the current reading and it climbs again
+     * from there. An unknown [nodeId] is a no-op: the caller is the UI, and a node can
+     * go away between a tap and its delivery.
+     */
+    @Synchronized
+    fun resetPeak(nodeId: Int, nowElapsedMs: Long) {
+        val acc = accumulators[nodeId] ?: return
+        acc.resetPeak()
+        publish(nowElapsedMs)
+    }
+
+    /**
+     * Discard one node's trace, so the graph starts again from the next packet.
+     *
+     * Only the history goes: the counters, the peak and the measured rate are not
+     * derived from it and a request to clear a plot is not a request to lose them.
+     * An unknown [nodeId] is a no-op, for the same reason as [resetPeak].
+     */
+    @Synchronized
+    fun clearHistory(nodeId: Int, nowElapsedMs: Long) {
+        val acc = accumulators[nodeId] ?: return
+        acc.clearHistory()
         publish(nowElapsedMs)
     }
 
@@ -129,8 +170,10 @@ class NodeRegistry {
         private var packetsReceived = 0L
         private var linkLost = 0L
         private var rebootCount = 0
+        private var peakRpm = 0L
 
         private val intervals = ArrayDeque<Long>()
+        private val history = ArrayDeque<RpmSample>()
         /** (timestamp, received, lost) triples, trimmed to [LOSS_WINDOW_MS]. */
         private val lossWindow = ArrayDeque<LongArray>()
 
@@ -142,11 +185,19 @@ class NodeRegistry {
             }
             senderIp = ip
 
+            // Recorded before the branches below, both of which return early. A
+            // first packet and the packet that reveals a reboot are exactly the two
+            // the trace must not be missing.
+            noteSample(nowMs, packet.rpm)
+
             if (!haveLast) {
                 haveLast = true
                 lastPacket = packet
                 lastSeenMs = nowMs
                 packetsReceived = 1
+                // Seeded from the node's own figure the first time only, so the
+                // display covers the run before this master was listening.
+                peakRpm = maxOf(packet.rpmPeak, packet.rpm)
                 noteWindow(nowMs, received = 1, lost = 0)
                 return
             }
@@ -162,6 +213,10 @@ class NodeRegistry {
                 rebootCount++
                 packetsReceived = 1
                 linkLost = 0
+                // The node's own peak restarted at the reboot, so the display does
+                // too. Carrying the old figure across would attribute a previous
+                // run's maximum to this one.
+                peakRpm = maxOf(packet.rpmPeak, packet.rpm)
                 intervals.clear()
                 lossWindow.clear()
                 lastPacket = packet
@@ -172,6 +227,10 @@ class NodeRegistry {
 
             val elapsed = nowMs - lastSeenMs
             val lost = if (collision || delta == 0) 0L else (delta - 1).toLong()
+
+            // Only the live reading feeds the mark from here on. A reset must survive
+            // the next packet, and the node's rpm_peak never falls.
+            peakRpm = maxOf(peakRpm, packet.rpm)
 
             packetsReceived++
             if (!collision) linkLost += lost
@@ -186,6 +245,34 @@ class NodeRegistry {
 
             lastPacket = packet
             lastSeenMs = nowMs
+        }
+
+        /**
+         * Rebase the mark on the current reading, not on 0. The engine is still
+         * turning at whatever it was turning at, and a mark below the live value
+         * would be contradicted by the needle standing beyond it.
+         */
+        fun resetPeak() {
+            peakRpm = if (haveLast) lastPacket.rpm else 0
+        }
+
+        fun clearHistory() = history.clear()
+
+        /**
+         * Append one sample and trim the trace.
+         *
+         * Bounded on both axes and on every path: the deque grows by exactly one per
+         * packet, the age loop stops as soon as the oldest entry is inside the
+         * window, and the count loop stops at the ceiling. History deliberately
+         * survives a reboot — the dropout either side of it is the most interesting
+         * thing the trace can show.
+         */
+        private fun noteSample(nowMs: Long, rpm: Long) {
+            history.addLast(RpmSample(nowMs, rpm))
+            while (history.isNotEmpty() && nowMs - history.first().elapsedMs > HISTORY_WINDOW_MS) {
+                history.removeFirst()
+            }
+            while (history.size > MAX_HISTORY_SAMPLES) history.removeFirst()
         }
 
         private fun noteWindow(nowMs: Long, received: Long, lost: Long) {
@@ -226,6 +313,11 @@ class NodeRegistry {
             return NodeState(
                 nodeId = nodeId,
                 last = lastPacket,
+                peakRpm = peakRpm,
+                // A copy, so a consumer holding this snapshot is never reading a
+                // deque the listener thread is mutating underneath it. The samples
+                // themselves are immutable and shared.
+                history = history.toList(),
                 senderIp = senderIp,
                 senderIps = senderIps.toSet(),
                 lastSeenElapsedMs = lastSeenMs,

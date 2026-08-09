@@ -47,6 +47,14 @@ data class FreshnessThresholds(val staleMs: Long, val offlineMs: Long) {
 }
 
 /**
+ * One reading, timestamped on the master's monotonic clock.
+ *
+ * The node's own `uptime_ms` is not used as the time base: it restarts at a reboot,
+ * and a trace whose x axis jumps backwards is worse than no trace.
+ */
+data class RpmSample(val elapsedMs: Long, val rpm: Long)
+
+/**
  * An immutable snapshot of one node, as published by [NodeRegistry].
  *
  * No history is kept — but the shape here is deliberately a snapshot of a
@@ -57,6 +65,25 @@ data class NodeState(
     val nodeId: Int,
     /** The most recent packet. Never null: a node exists only once one has arrived. */
     val last: RpmPacket,
+    /**
+     * The displayed high-water mark: the highest reading seen since this node was
+     * first heard, its last reboot, or the last [NodeRegistry.resetPeak].
+     *
+     * Seeded from the node's own `rpm_peak`, so it covers the run before the master
+     * was listening. After a reset it tracks only what this master has seen — folding
+     * the node's monotonic figure back in would undo the reset on the next packet.
+     * `last.rpmPeak` remains the unmodified wire value.
+     */
+    val peakRpm: Long,
+    /**
+     * Recent readings, oldest first, trimmed to [NodeRegistry.HISTORY_WINDOW_MS] and
+     * to a hard sample count so a fast node cannot grow it without bound.
+     *
+     * Every accepted packet contributes one sample, including the first and the one
+     * that reveals a reboot — a trace with the interesting packets missing from it is
+     * the wrong trace.
+     */
+    val history: List<RpmSample>,
     /** Source address of the most recent packet — evidence the DHCP lease worked. */
     val senderIp: String,
     /** Every source address seen for this id. More than one means [collision]. */

@@ -91,8 +91,8 @@ private fun NodeRow(node: NodeState, selected: Boolean, onSelect: (Int) -> Unit)
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(
-                if (node.stalled) "STALL/0" else "${node.last.rpm}",
-                color = if (node.stalled) InstrumentAmber else MaterialTheme.colorScheme.onSurface,
+                "${node.last.rpm}",
+                color = MaterialTheme.colorScheme.onSurface,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
                 fontSize = 22.sp,
@@ -110,6 +110,8 @@ private fun PreviewNodeList() = RPMMasterTheme(darkTheme = true) {
     fun n(id: Int, rpm: Long, f: Freshness, ip: String, collision: Boolean = false) = NodeState(
         nodeId = id,
         last = RpmPacket(id, 100, 60_000, rpm, 6100),
+        peakRpm = 6100,
+        history = emptyList(),
         senderIp = ip,
         senderIps = if (collision) setOf(ip, "192.168.43.99") else setOf(ip),
         lastSeenElapsedMs = 0,

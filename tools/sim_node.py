@@ -54,12 +54,18 @@ def rpm_at(t, args):
     """The engine profile at t seconds.
 
     A sine through the middle of the design window, with a periodic stall spell so
-    the STALL/0 path is exercised, and an occasional excursion to ~9000 so the
+    the zero path is exercised, and an occasional excursion to ~9000 so the
     out-of-range flag is exercised too (A.5).
+
+    A run opens in a stall spell, so the peak starts at 0 and builds. The overrange
+    excursion is held off until a full period has elapsed for the same reason:
+    firing it at t=0 would put the run's peak at its extreme within the first packet,
+    which is exactly the case the master's high-water mark exists to show building up.
     """
     if args.stall_period > 0 and (t % args.stall_period) < args.stall_length:
         return 0
-    if args.overrange_period > 0 and (t % args.overrange_period) < args.overrange_length:
+    if (args.overrange_period > 0 and t >= args.overrange_period
+            and (t % args.overrange_period) < args.overrange_length):
         return args.overrange_rpm
     return int(3000 + 2500 * math.sin(t / 5.0))
 
