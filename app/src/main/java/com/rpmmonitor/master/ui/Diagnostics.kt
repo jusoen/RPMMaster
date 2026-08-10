@@ -315,6 +315,57 @@ fun Diagnostics(
             )
         }
 
+        Section("What counts as a good figure") {
+            Note(
+                "There is no universal answer, and the bands below are the shape of one " +
+                    "rather than the thing itself. What is good depends on the engine: " +
+                    "cylinder count, capacity, state of tune, ignition and fuelling, " +
+                    "flywheel mass, whether idle is controlled or simply set, load, and " +
+                    "how worn it is. Two examples of the same engine will not agree " +
+                    "either.",
+            )
+            Spacer(Modifier.height(4.dp))
+            Note(
+                "So log your own. Press Save with the engine running as you want it, " +
+                    "warm, at idle and at a steady cruise, and keep the JSON. That " +
+                    "baseline beats any published figure, because the useful question " +
+                    "is not \"is 3 per cent good\" but \"is it what this engine did last " +
+                    "month\". Collect a few and a change stands out long before it is " +
+                    "audible.",
+            )
+            Spacer(Modifier.height(4.dp))
+            Definition(
+                "At idle",
+                "Wander of 2 to 4 per cent is a healthy idle on most engines. Past " +
+                    "about 6 per cent something is moving it: a vacuum leak, fuelling, " +
+                    "or ignition. Roughness under 2 per cent is good, 3 to 5 is " +
+                    "marginal, and above 5 usually means a cylinder is down. A light " +
+                    "flywheel raises both without anything being wrong.",
+            )
+            Definition(
+                "Held at a cruise speed",
+                "Both figures should fall well under 1 per cent. Idle is the hard case " +
+                    "for any engine, so anything that stays as bad at 3000 as it was at " +
+                    "idle is not an idle-speed or mixture problem and wants looking at " +
+                    "differently.",
+            )
+            Definition(
+                "What roughness can and cannot tell you",
+                "A four-stroke fires each cylinder once every two revolutions, so on a " +
+                    "multi-cylinder engine every measured revolution already averages " +
+                    "several firings. A weak cylinder lifts the figure but cannot be " +
+                    "named by it. It tells you one is down, not which one.",
+            )
+            Definition(
+                "Compare like with like",
+                "A cold engine is always rougher, and it is still settling for some " +
+                    "minutes after it sounds warm. Idle figures also shift with " +
+                    "electrical load and with a gearbox in or out of gear. Take the " +
+                    "baseline and the comparison under the same conditions, or the " +
+                    "difference you measure will be the conditions.",
+            )
+        }
+
         Section("Hotspot setup") {
             Note(
                 "The phone is the access point and the DHCP server. Configure the " +
