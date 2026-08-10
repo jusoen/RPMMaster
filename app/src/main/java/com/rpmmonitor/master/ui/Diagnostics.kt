@@ -169,7 +169,7 @@ fun Diagnostics(
                 "How much weight each new reading carries in that average, from 0.02 " +
                     "to 1.00. At 1.00 the average is the raw trace. Lower values smooth " +
                     "harder and lag further behind. It changes the picture only, never " +
-                    "the recorded data and never the stability figure.",
+                    "the recorded data and never the figures beneath it.",
             )
             Definition(
                 "Time span",
@@ -204,10 +204,29 @@ fun Diagnostics(
             )
         }
 
-        Section("Stability") {
+        Section("Stability: wander and roughness") {
             Note(
-                "Over the n readings in the window, with x the reading and t its own " +
-                    "arrival time in seconds:",
+                "Two different faults live at two different speeds, so they are two " +
+                    "different figures. Wander is the engine speed moving about over " +
+                    "tenths of a second: surge, hunting, drift. Roughness is the " +
+                    "variation between individual revolutions: combustion, a misfire, a " +
+                    "weak cylinder. An engine can hold a rock-steady average while " +
+                    "running badly, so one combined number would hide exactly the fault " +
+                    "worth finding.",
+            )
+            Spacer(Modifier.height(4.dp))
+            Definition(
+                "Which you get",
+                "A version-1 node sends one reading per packet, so only the slow half " +
+                    "can be measured and it is labelled \"stability\". A version-2 node " +
+                    "also sends the statistics of the revolutions inside each reporting " +
+                    "interval, and the line splits into \"wander\" and \"roughness\". " +
+                    "The Protocol row above says which node you have.",
+            )
+            Spacer(Modifier.height(6.dp))
+            Note(
+                "Wander, over the n readings in the window, with x the reading and t " +
+                    "its own arrival time in seconds:",
             )
             Spacer(Modifier.height(2.dp))
             Formula("trend   x(t) = a + b*t          fitted by least squares")
@@ -222,9 +241,26 @@ fun Diagnostics(
             )
             Spacer(Modifier.height(6.dp))
             Note(
-                "\"±42 rpm · 1.20%\" reads as: over the window on screen, the reading " +
-                    "scatters about its own trend by 42 rpm, one standard deviation, " +
-                    "and that is 1.20 per cent of the mean.",
+                "Roughness, pooled over the intervals in the window, with n[i] " +
+                    "revolutions in interval i and sd[i] their standard deviation as " +
+                    "the node measured it:",
+            )
+            Spacer(Modifier.height(2.dp))
+            Formula("sigma   sqrt( SUM( (n[i]-1) * sd[i]^2 ) / SUM( n[i]-1 ) )")
+            Formula("CoV %   sigma / mean(x) * 100")
+            Spacer(Modifier.height(2.dp))
+            Note(
+                "The weight is n minus 1, not n, because the node sends a sample " +
+                    "standard deviation. An interval holding one revolution has no " +
+                    "spread and drops out on its own, its weight being zero.",
+            )
+            Spacer(Modifier.height(6.dp))
+            Note(
+                "\"wander ±42 rpm · 1.20%\" reads as: over the window on screen, the " +
+                    "reading scatters about its own trend by 42 rpm, one standard " +
+                    "deviation, and that is 1.20 per cent of the mean. \"roughness " +
+                    "±81.1 rpm\" reads the same way, but about the mean of each " +
+                    "interval rather than about the trend.",
             )
             Spacer(Modifier.height(4.dp))
             Definition(
@@ -233,7 +269,7 @@ fun Diagnostics(
                     "instability: open the throttle and it climbs while the engine runs " +
                     "perfectly. A straight line is fitted over the window and the " +
                     "spread is measured about that line, so a steady pull measures zero " +
-                    "and only the roughness is left.",
+                    "and only the wander is left.",
             )
             Definition(
                 "Why a percentage as well",
@@ -244,24 +280,38 @@ fun Diagnostics(
                 "Keep the window short",
                 "A straight line removes a ramp exactly, but not a curve. Over 60 " +
                     "seconds a real change in engine speed stays in the residual and " +
-                    "inflates the figure. 5 or 10 seconds reads roughness. A minute " +
-                    "reads roughness plus whatever the engine actually did.",
+                    "inflates the wander. 5 or 10 seconds reads the wander alone. A " +
+                    "minute reads it plus whatever the engine actually did. Roughness " +
+                    "is unaffected, being measured inside each interval.",
             )
             Definition(
                 "When no figure is given",
-                "Under 20 samples in the window there is too little to measure, which a " +
-                    "5 second window at the slowest node cadence will hit. If the " +
-                    "engine stopped anywhere in the window the figure is withheld too: " +
-                    "a stall is not roughness, and a mean dragged toward zero would " +
+                "Under 20 samples in the window there is too little to measure. If the " +
+                    "engine stopped anywhere in the window both figures are withheld: a " +
+                    "stall is not instability, and a mean dragged toward zero would " +
                     "report a healthy engine as wildly unstable.",
             )
             Definition(
-                "What it cannot see",
-                "One already-averaged reading arrives per packet, at best every 100 " +
-                    "ms, so nothing faster than about 5 Hz survives to be measured. " +
-                    "This is a measure of wander, surge and hunting. Cycle-to-cycle " +
-                    "combustion variation would need the node to report statistics per " +
-                    "revolution, not a faster packet rate.",
+                "When roughness alone is missing",
+                "It needs 20 pooled degrees of freedom, which is a handful of intervals " +
+                    "at 3000 rpm and most of the window at idle. Below about 600 rpm a " +
+                    "revolution cannot always finish inside one reporting interval, so " +
+                    "an interval reports none at all and reads as a stall.",
+            )
+            Definition(
+                "At the measurement floor",
+                "The node times pulses to a microsecond, which sets a smallest " +
+                    "measurable spread. It climbs with the square of engine speed: " +
+                    "nothing at idle, about 0.4 rpm at 7500. A roughness reading at or " +
+                    "under it is the clock, not the engine, and says so.",
+            )
+            Definition(
+                "Intervals discarded",
+                "An interval whose own minimum and maximum do not bracket its own mean " +
+                    "is contradicting itself. It is dropped from the roughness figure " +
+                    "and counted in amber. The reading is kept regardless, because a " +
+                    "fault in the node's statistics should not take the dial with it. " +
+                    "A healthy node holds this at zero.",
             )
         }
 
