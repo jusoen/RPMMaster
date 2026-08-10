@@ -188,7 +188,7 @@ class NodeRegistry {
             // Recorded before the branches below, both of which return early. A
             // first packet and the packet that reveals a reboot are exactly the two
             // the trace must not be missing.
-            noteSample(nowMs, packet.rpm)
+            noteSample(nowMs, packet)
 
             if (!haveLast) {
                 haveLast = true
@@ -267,8 +267,8 @@ class NodeRegistry {
          * survives a reboot — the dropout either side of it is the most interesting
          * thing the trace can show.
          */
-        private fun noteSample(nowMs: Long, rpm: Long) {
-            history.addLast(RpmSample(nowMs, rpm))
+        private fun noteSample(nowMs: Long, packet: RpmPacket) {
+            history.addLast(RpmSample(nowMs, packet.rpm, packet.interval))
             while (history.isNotEmpty() && nowMs - history.first().elapsedMs > HISTORY_WINDOW_MS) {
                 history.removeFirst()
             }

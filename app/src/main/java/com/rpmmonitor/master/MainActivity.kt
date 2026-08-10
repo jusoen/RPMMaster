@@ -33,8 +33,10 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -57,9 +59,11 @@ import com.rpmmonitor.master.ui.RpmGraph
 import com.rpmmonitor.master.ui.theme.InstrumentAmber
 import com.rpmmonitor.master.ui.theme.InstrumentRed
 import com.rpmmonitor.master.ui.theme.RPMMasterTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Hosts the three screens and owns the binding to [RpmService].
@@ -176,6 +180,9 @@ private fun AppScreen(binderFlow: StateFlow<RpmService.LocalBinder?>) {
 
     val selected = selectedId?.let { nodes[it] } ?: nodes.values.minByOrNull { it.nodeId }
 
+    /** True while an export is being written, which disables the button. */
+    var saving by remember { mutableStateOf(false) }
+
     // targetSdk 36 means the window is edge-to-edge whether we ask for it or not, so
     // the content has to keep itself clear of the status and navigation bars.
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -185,29 +192,48 @@ private fun AppScreen(binderFlow: StateFlow<RpmService.LocalBinder?>) {
             onStop = { RpmService.stop(context) },
             listenerState = listenerState,
             // Everything the registry holds, not just the screen being looked at.
-            // Disabled with no nodes: an export of nothing is a support ticket.
-            canSave = nodes.isNotEmpty(),
+            // Disabled with no nodes (an export of nothing is a support ticket) and
+            // while one is in flight, so a second tap cannot start a concurrent write
+            // to a second file.
+            canSave = nodes.isNotEmpty() && !saving,
             onSave = {
-                val json = JsonExport.build(
-                    nodes = nodes.values,
-                    stats = stats,
-                    sessionUptimeMs = startedAt?.let { SystemClock.elapsedRealtime() - it },
-                    nowElapsedMs = SystemClock.elapsedRealtime(),
-                    wallClockMs = System.currentTimeMillis(),
-                )
-                val result = ExportWriter.write(
-                    context = context,
-                    fileName = JsonExport.fileName(System.currentTimeMillis()),
-                    content = json,
-                )
-                Toast.makeText(
-                    context,
-                    when (result) {
-                        is ExportResult.Saved -> "Saved to ${result.location}"
-                        is ExportResult.Failed -> "Save failed: ${result.message}"
-                    },
-                    Toast.LENGTH_LONG,
-                ).show()
+                // Serialising several hundred samples and writing them through a
+                // content provider takes long enough to drop frames, and the frame it
+                // would drop is the one drawing the button's own press. The snapshot
+                // is taken here on the main thread, the work is done off it.
+                val snapshot = nodes.values.toList()
+                val statsNow = stats
+                val uptime = startedAt?.let { SystemClock.elapsedRealtime() - it }
+                val elapsedNow = SystemClock.elapsedRealtime()
+                val wallNow = System.currentTimeMillis()
+
+                saving = true
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        ExportWriter.write(
+                            context = context,
+                            fileName = JsonExport.fileName(wallNow),
+                            content = JsonExport.build(
+                                nodes = snapshot,
+                                stats = statsNow,
+                                sessionUptimeMs = uptime,
+                                nowElapsedMs = elapsedNow,
+                                wallClockMs = wallNow,
+                            ),
+                        )
+                    }
+                    // Cleared before the toast, and on every path: a failed write must
+                    // not leave the button disabled for the rest of the session.
+                    saving = false
+                    Toast.makeText(
+                        context,
+                        when (result) {
+                            is ExportResult.Saved -> "Saved to ${result.location}"
+                            is ExportResult.Failed -> "Save failed: ${result.message}"
+                        },
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
             },
         )
 

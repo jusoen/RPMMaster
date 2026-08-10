@@ -48,11 +48,15 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.rpmmonitor.master.proto.RpmPacket
+import com.rpmmonitor.master.state.EngineStability
 import com.rpmmonitor.master.state.Freshness
 import com.rpmmonitor.master.state.FreshnessThresholds
+import com.rpmmonitor.master.state.NoStability
 import com.rpmmonitor.master.state.NodeRegistry
 import com.rpmmonitor.master.state.NodeState
+import com.rpmmonitor.master.state.Roughness
 import com.rpmmonitor.master.state.RpmSample
+import com.rpmmonitor.master.state.Stability
 import com.rpmmonitor.master.ui.theme.InstrumentAmber
 import com.rpmmonitor.master.ui.theme.InstrumentCream
 import com.rpmmonitor.master.ui.theme.InstrumentGreen
@@ -155,6 +159,10 @@ fun RpmGraph(
         var zoom by rememberSaveable { mutableIntStateOf(0) }
         var zoomCentre by rememberSaveable { mutableFloatStateOf(0f) }
 
+        // Top of scale. The dial keeps its fixed face, and this only changes how the
+        // graph is drawn, so nothing recorded or reported depends on it.
+        var maxRpm by rememberSaveable { mutableFloatStateOf(TACH_MAX_RPM) }
+
         val measurer = rememberTextMeasurer()
         // Anchored on the snapshot's own idea of now: the freshness timer republishes
         // every 250 ms, so this advances whether or not packets are still arriving.
@@ -165,7 +173,11 @@ fun RpmGraph(
         val gapMs = (node.observedIntervalMs?.times(5) ?: 2_000L).coerceAtLeast(500L)
         val raw = remember(node.history) { filterSeries(node.history, null, gapMs) }
         val averaged = remember(node.history, alpha) { filterSeries(node.history, alpha, gapMs) }
-        val view = viewRange(zoom, zoomCentre)
+        val view = viewRange(zoom, zoomCentre, maxRpm)
+
+        // Measured over exactly the samples the plot is drawing, so the figure and the
+        // picture cannot disagree about which window they describe.
+        val stability = EngineStability.of(node.history.filter { nowMs - it.elapsedMs <= windowMs })
 
         BoxWithConstraints(
             Modifier
@@ -244,7 +256,31 @@ fun RpmGraph(
         }
 
         Spacer(Modifier.height(6.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("full scale", color = InstrumentGrey, fontSize = 12.sp)
+            Text(
+                "${maxRpm.toInt()} rpm",
+                color = InstrumentCream,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClickLabel = "Change the graph's full scale") {
+                        val next = MAX_RPM_CHOICES.indexOf(maxRpm) + 1
+                        maxRpm = MAX_RPM_CHOICES[next % MAX_RPM_CHOICES.size]
+                    }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+
         AlphaControl(alpha = alpha, onAlphaChange = { alpha = it })
+
+        StabilityLine(stability)
 
         Text(
             // Named rather than left as a bare figure: this is the packet arrival
@@ -301,6 +337,16 @@ private val WINDOW_CHOICES = listOf(5_000L, 10_000L, 30_000L, NodeRegistry.HISTO
  */
 private val ZOOM_BANDS = listOf(0f, 500f, 1000f)
 
+/**
+ * Tops of scale the graph offers.
+ *
+ * The dial is fixed at [TACH_MAX_RPM] because an instrument face does not change
+ * under you, but the graph is a diagnostic view: an engine that never passes 3000
+ * spends more than half the plot's height showing nothing, and the detail that
+ * matters is squeezed into what is left.
+ */
+private val MAX_RPM_CHOICES = listOf(2_000f, 3_000f, 4_000f, 5_000f, TACH_MAX_RPM)
+
 /** The rpm range the vertical axis covers. */
 private data class ViewRange(val min: Float, val max: Float) {
     val span: Float get() = max - min
@@ -313,15 +359,18 @@ private data class ViewRange(val min: Float, val max: Float) {
  * truncated: the instrument cannot show negative rpm or anything past its end stop,
  * and a half-height band would make the zoom step look like it had failed.
  */
-private fun viewRange(zoom: Int, centre: Float): ViewRange {
+private fun viewRange(zoom: Int, centre: Float, maxRpm: Float): ViewRange {
     val half = ZOOM_BANDS.getOrElse(zoom) { 0f }
-    if (half <= 0f) return ViewRange(0f, TACH_MAX_RPM)
+    if (half <= 0f) return ViewRange(0f, maxRpm)
 
     var min = centre - half
     var max = centre + half
     if (min < 0f) { max -= min; min = 0f }
-    if (max > TACH_MAX_RPM) { min -= max - TACH_MAX_RPM; max = TACH_MAX_RPM }
-    return ViewRange(min.coerceAtLeast(0f), max.coerceAtMost(TACH_MAX_RPM))
+    if (max > maxRpm) { min -= max - maxRpm; max = maxRpm }
+    // A band wider than the chosen scale collapses to the scale itself rather than
+    // inverting, which is what an unchecked shift of both ends would do.
+    return ViewRange(min.coerceAtLeast(0f), max.coerceAtMost(maxRpm)).takeIf { it.span > 0f }
+        ?: ViewRange(0f, maxRpm)
 }
 
 /**
@@ -358,6 +407,82 @@ private val RAW_COLOUR = Color(0xFFE8642F)
  * hues apart.
  */
 private val AVERAGE_COLOUR = InstrumentGreen
+
+/**
+ * How steadily the engine is running, over the window on screen.
+ *
+ * The trend is removed before the spread is measured, so this does not rise merely
+ * because the throttle moved. It is stated as both an absolute figure and a
+ * percentage of the mean: 40 rpm of wander is a fault at idle and nothing at 6000.
+ *
+ * A version-2 node splits into two lines, because the two describe different faults.
+ * The first is the movement between reporting intervals — surge, hunting, drift. The
+ * second is the spread between individual revolutions inside them, which is
+ * combustion roughness and is the thing a version-1 node cannot show at all. A single
+ * combined figure would let a rough engine at a steady speed read as healthy.
+ */
+@Composable
+private fun StabilityLine(stability: Stability) {
+    val roughness = (stability as? Stability.Measured)?.roughness ?: Roughness.NotReported
+    val split = roughness != Roughness.NotReported
+
+    val headline = when (stability) {
+        is Stability.Measured -> {
+            // Renamed rather than duplicated: from a v2 node this figure is measuring
+            // only the between-interval half, and calling it "stability" beside a
+            // separate roughness line would claim more than it covers.
+            val label = if (split) "wander" else "stability"
+            "$label ±%.0f rpm · %.2f%%".format(stability.sigmaRpm, stability.covPercent)
+        }
+        is Stability.Unavailable -> when (stability.reason) {
+            // Said plainly rather than shown as a zero or a dash on its own: a figure
+            // that is not being offered, and why, is more use than one that looks
+            // like a measurement.
+            NoStability.TOO_FEW_SAMPLES ->
+                "stability — needs ${EngineStability.MIN_SAMPLES} samples in the window"
+            NoStability.STALL_IN_WINDOW -> "stability — engine stopped in this window"
+        }
+    }
+
+    Text(headline, color = InstrumentGrey, fontSize = 12.sp)
+
+    when (roughness) {
+        // A version-1 node. Nothing is said about roughness at all, rather than a
+        // refusal implying it might arrive.
+        Roughness.NotReported -> Unit
+
+        Roughness.TooFewRevolutions -> Text(
+            "roughness — too few revolutions measured in the window",
+            color = InstrumentGrey,
+            fontSize = 12.sp,
+        )
+
+        is Roughness.Measured -> {
+            Text(
+                buildString {
+                    append("roughness ±%.1f rpm · %.2f%%".format(roughness.sigmaRpm, roughness.covPercent))
+                    append(" · %d revs".format(roughness.revolutions))
+                    // Quantisation alone produces a small σ that climbs with the square
+                    // of speed. Saying so is the difference between a real 0.4 rpm at
+                    // redline and the clock's own 0.4 rpm.
+                    if (roughness.sigmaRpm <= roughness.floorRpm) append(" · at the measurement floor")
+                },
+                color = InstrumentGrey,
+                fontSize = 12.sp,
+            )
+            if (roughness.excluded > 0) {
+                // The node contradicting itself, not the engine running badly. Amber
+                // because it wants looking at, and separate because attributing it to
+                // the engine would send you hunting the wrong fault.
+                Text(
+                    "${roughness.excluded} interval(s) discarded — node statistics inconsistent",
+                    color = InstrumentAmber,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
 
 /** The filter's weight, beneath the plot it applies to. */
 @Composable
@@ -448,10 +573,10 @@ private fun DrawScope.drawGrid(measurer: TextMeasurer, view: ViewRange) {
         )
     }
 
-    // Zoomed in, the thousands labels would repeat or vanish, so the lines carry their
-    // actual rpm. At full scale they stay as the thousands a dial is marked in.
-    val full = view.min <= 0f && view.max >= TACH_MAX_RPM
+    // Thousands only while the lines are a thousand apart. On any finer step they
+    // would repeat — 0, 0, 1, 1, 2 — so the lines carry their actual rpm instead.
     val step = gridStep(view.span)
+    val full = step >= 1000
     var rpm = (view.min / step).toInt() * step
     while (rpm <= view.max.toInt() + step) {
         if (rpm >= view.min - 1f && rpm <= view.max + 1f) {

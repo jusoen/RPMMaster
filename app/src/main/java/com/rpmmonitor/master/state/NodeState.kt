@@ -1,5 +1,6 @@
 package com.rpmmonitor.master.state
 
+import com.rpmmonitor.master.proto.IntervalStats
 import com.rpmmonitor.master.proto.RpmCodec
 import com.rpmmonitor.master.proto.RpmPacket
 
@@ -52,7 +53,16 @@ data class FreshnessThresholds(val staleMs: Long, val offlineMs: Long) {
  * The node's own `uptime_ms` is not used as the time base: it restarts at a reboot,
  * and a trace whose x axis jumps backwards is worse than no trace.
  */
-data class RpmSample(val elapsedMs: Long, val rpm: Long)
+data class RpmSample(
+    val elapsedMs: Long,
+    val rpm: Long,
+    /**
+     * The version-2 statistics for the interval this reading covers, or null from a
+     * version-1 node. Carried per sample rather than per node because the roughness
+     * figure is pooled across whichever samples are in the displayed window.
+     */
+    val interval: IntervalStats? = null,
+)
 
 /**
  * An immutable snapshot of one node, as published by [NodeRegistry].
@@ -101,11 +111,20 @@ data class NodeState(
     /** Packets accepted since the node was first seen, or since its last reboot. */
     val packetsReceived: Long,
     /**
-     * Datagrams lost between here and the node, from wrap-aware seq deltas.
+     * Datagrams that never arrived, from wrap-aware seq deltas.
      *
-     * Node-side drops never produce a gap (Appendix A.2) — the firmware increments
-     * `seq` only after a successful hand-off to the stack — so this figure measures
-     * the air link and the receiver, nothing on the node.
+     * What that includes depends on the node's protocol version, and the two are not
+     * interchangeable:
+     *
+     * - **Version 1** increments `seq` only after a successful hand-off to the network
+     *   stack (Appendix A.2), so a node-side drop advances nothing and this figure
+     *   measures the air link and the receiver, nothing on the node.
+     * - **Version 2** increments `seq` once per reporting interval whether or not the
+     *   datagram was handed off, because the interval is consumed either way. A gap
+     *   then means "interval not received" and cannot distinguish loss in the air from
+     *   a send that failed on the node.
+     *
+     * [reportsIntervalStats] says which reading applies.
      */
     val linkLost: Long,
     /** Link loss over a short sliding window, 0..1, or null with too few samples. */
@@ -136,4 +155,12 @@ data class NodeState(
 
     /** True when the node is reporting a stall or no sensor signal. */
     val stalled: Boolean get() = last.rpm == 0L
+
+    /**
+     * True when the most recent packet carried version-2 per-interval statistics.
+     *
+     * Taken from the packet rather than remembered, so a node downgraded to a v1 build
+     * stops claiming it from the next packet on.
+     */
+    val reportsIntervalStats: Boolean get() = last.interval != null
 }

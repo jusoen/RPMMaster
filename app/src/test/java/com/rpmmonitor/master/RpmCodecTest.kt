@@ -1,10 +1,12 @@
 package com.rpmmonitor.master
 
+import com.rpmmonitor.master.proto.IntervalStats
 import com.rpmmonitor.master.proto.ParseResult
 import com.rpmmonitor.master.proto.RpmCodec
 import com.rpmmonitor.master.proto.RpmPacket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
@@ -145,6 +147,148 @@ class RpmCodecTest {
         val original = RpmPacket(nodeId = 7, seq = 65535, uptimeMs = 4_294_967_295L, rpm = 7400, rpmPeak = 9000)
         val r = RpmCodec.parse(RpmCodec.encode(original), 20)
         assertEquals(original, (r as ParseResult.Ok).packet)
+    }
+
+    /** The 28-byte version-2 layout, hand-built for the same reason as [goodBytes]. */
+    private fun v2Bytes(
+        version: Int = 2,
+        rpm: Long = 3000L,
+        revCount: Int = 5,
+        sdRpmX10: Int = 1414,
+        minRpm: Int = 2900,
+        maxRpm: Int = 3100,
+        magic: Int = RpmCodec.MAGIC,
+    ): ByteArray = ByteBuffer.allocate(28).order(ByteOrder.LITTLE_ENDIAN)
+        .putInt(magic)
+        .put(version.toByte())
+        .put(1.toByte())
+        .putShort(0x1234.toShort())
+        .putInt(10_000)
+        .putInt(rpm.toInt())
+        .putInt(5500)
+        .putShort(revCount.toShort())
+        .putShort(sdRpmX10.toShort())
+        .putShort(minRpm.toShort())
+        .putShort(maxRpm.toShort())
+        .array()
+
+    @Test
+    fun `parses a version 2 packet including the interval statistics`() {
+        val p = (RpmCodec.parse(v2Bytes(), 28) as ParseResult.Ok).packet
+        // The first twenty bytes must read exactly as they do on a v1 packet.
+        assertEquals(1, p.nodeId)
+        assertEquals(0x1234, p.seq)
+        assertEquals(10_000L, p.uptimeMs)
+        assertEquals(3000L, p.rpm)
+        assertEquals(5500L, p.rpmPeak)
+        val s = p.interval!!
+        assertEquals(5, s.revCount)
+        assertEquals(1414, s.sdRpmX10)
+        assertEquals(141.4, s.sdRpm!!, 1e-9)
+        assertEquals(2900L, s.minRpm)
+        assertEquals(3100L, s.maxRpm)
+    }
+
+    @Test
+    fun `a version 1 packet carries no interval statistics`() {
+        assertNull((RpmCodec.parse(goodBytes(), 20) as ParseResult.Ok).packet.interval)
+    }
+
+    @Test
+    fun `the new fields are treated as unsigned`() {
+        // 0xFFFF in every u16. A signed read of any of them gives -1.
+        val s = (RpmCodec.parse(
+            v2Bytes(revCount = 0xFFFF, sdRpmX10 = 0xFFFF, minRpm = 0xFFFF, maxRpm = 0xFFFF),
+            28,
+        ) as ParseResult.Ok).packet.interval!!
+        assertEquals(65535, s.revCount)
+        assertEquals(65535, s.sdRpmX10)
+        assertEquals(65535L, s.minRpm)
+        assertEquals(65535L, s.maxRpm)
+    }
+
+    @Test
+    fun `length and version must agree in both directions`() {
+        // 20 bytes claiming v2 is already asserted above. The mirror case is a 28-byte
+        // payload claiming v1: countable, because it means a node is sending something
+        // this build cannot read, but not parseable.
+        assertEquals(ParseResult.UnknownVersion(1), RpmCodec.parse(v2Bytes(version = 1), 28))
+        assertEquals(ParseResult.UnknownVersion(3), RpmCodec.parse(v2Bytes(version = 3), 28))
+    }
+
+    @Test
+    fun `a length between the two is not ours`() {
+        val b = ByteArray(28)
+        v2Bytes().copyInto(b)
+        for (len in listOf(21, 24, 27, 29, 36)) {
+            assertEquals(ParseResult.NotOurs, RpmCodec.parse(ByteArray(64).also { b.copyInto(it) }, len))
+        }
+    }
+
+    @Test
+    fun `sigma is withheld rather than reported as zero when there was nothing to measure`() {
+        // A one-revolution interval has no spread, which is not the same as a spread of
+        // zero. Reporting 0 here would read as a perfectly steady engine.
+        val one = (RpmCodec.parse(v2Bytes(revCount = 1, sdRpmX10 = 0, minRpm = 3000, maxRpm = 3000), 28)
+            as ParseResult.Ok).packet.interval!!
+        assertNull(one.sdRpm)
+        val none = (RpmCodec.parse(v2Bytes(rpm = 0, revCount = 0, sdRpmX10 = 0, minRpm = 0, maxRpm = 0), 28)
+            as ParseResult.Ok).packet.interval!!
+        assertNull(none.sdRpm)
+        // Two is the point at which a sample standard deviation exists.
+        val two = (RpmCodec.parse(v2Bytes(revCount = 2), 28) as ParseResult.Ok).packet.interval!!
+        assertEquals(141.4, two.sdRpm!!, 1e-9)
+    }
+
+    @Test
+    fun `interval consistency brackets the mean`() {
+        val s = IntervalStats(revCount = 5, sdRpmX10 = 1414, minRpm = 2900, maxRpm = 3100)
+        assertTrue(s.consistentWith(3000))
+        assertTrue(s.consistentWith(2900))   // the bounds are inclusive
+        assertTrue(s.consistentWith(3100))
+        assertFalse(s.consistentWith(2899))
+        assertFalse(s.consistentWith(3101))
+        // An inverted pair cannot bracket anything, so it can never be consistent.
+        assertFalse(IntervalStats(5, 0, 3100, 2900).consistentWith(3000))
+    }
+
+    @Test
+    fun `an empty interval must be zero throughout`() {
+        assertTrue(IntervalStats(0, 0, 0, 0).consistentWith(0))
+        // No revolutions but a non-zero reading is a contradiction, in either field.
+        assertFalse(IntervalStats(0, 0, 0, 0).consistentWith(3000))
+        assertFalse(IntervalStats(0, 0, 2900, 3100).consistentWith(0))
+        assertFalse(IntervalStats(0, 120, 0, 0).consistentWith(0))
+    }
+
+    @Test
+    fun `a version 2 packet is not parsed against the statistics it carries`() {
+        // Framing only: an impossible interval still yields a usable reading, because
+        // losing the dial over a fault in a subsidiary figure is the worse failure.
+        val p = (RpmCodec.parse(v2Bytes(rpm = 3000, minRpm = 4000, maxRpm = 100), 28)
+            as ParseResult.Ok).packet
+        assertEquals(3000L, p.rpm)
+        assertFalse(p.interval!!.consistentWith(p.rpm))
+    }
+
+    @Test
+    fun `version 2 encode round-trips through parse`() {
+        val original = RpmPacket(
+            nodeId = 7, seq = 65535, uptimeMs = 4_294_967_295L, rpm = 7400, rpmPeak = 9000,
+            interval = IntervalStats(revCount = 65535, sdRpmX10 = 65535, minRpm = 65535, maxRpm = 65535),
+        )
+        val bytes = RpmCodec.encode(original)
+        assertEquals(28, bytes.size)
+        assertEquals(original, (RpmCodec.parse(bytes, 28) as ParseResult.Ok).packet)
+    }
+
+    @Test
+    fun `garbage of the v2 length does not crash`() {
+        val rnd = java.util.Random(1963)
+        repeat(2000) {
+            val b = ByteArray(28).also { a -> rnd.nextBytes(a) }
+            RpmCodec.parse(b, 28)
+        }
     }
 
     @Test
